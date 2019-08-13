@@ -11,8 +11,11 @@ run:
   args: 
   - -exc
   - |
-    postgres_src/concourse/scripts/install_postgres.sh
-    postgres_src/concourse/scripts/zedstore_perf_test.sh
+    # Set up postgres user
+    getent passwd postgres|| useradd postgres
+
+    su -u postgres -c "postgres_src/concourse/scripts/install_postgres.sh"
+    su -u postgres -c "postgres_src/concourse/scripts/zedstore_perf_test.sh"
 params:
   EXTRA_CONFIGURE_FLAGS: ""
   SCALE_FACTOR: 1

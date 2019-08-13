@@ -18,10 +18,10 @@ resources:
     uri: https://github.com/tvesely/vops
     branch: update_interfaces_to_13_dev
 
-- name: gpdb6_test_image
+- name: gpdb6_build_image
   type: docker-image
   source:
-    repository: pivotaldata/gpdb6-centos7-test
+    repository: pivotaldata/gpdb6-centos7-build
     tag: 'latest'
 
 jobs:
@@ -31,17 +31,17 @@ jobs:
     - get: postgres_src
       trigger: true
     - get: tpch_dbgen_src
-    - get: gpdb6_test_image
+    - get: gpdb6_build_image
   - aggregate:
     - task: run_benchmark
       file: postgres_src/concourse/tasks/run_benchmark.yaml
       params:
         EXTRA_CONFIGURE_FLAGS: ""
         SCALE_FACTOR: 10
-      image: gpdb6_test_image
+      image: gpdb6_build_image
     - task: run_benchmark_lz4
       file: postgres_src/concourse/tasks/run_benchmark.yaml
       params:
         EXTRA_CONFIGURE_FLAGS: "--with-lz4"
         SCALE_FACTOR: 10
-      image: gpdb6_test_image
+      image: gpdb6_build_image
