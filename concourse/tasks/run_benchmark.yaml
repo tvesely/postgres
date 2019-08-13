@@ -1,0 +1,18 @@
+---
+platform: linux
+image_resource:
+  type: docker-image
+inputs:
+  - name: postgres_src
+  - name: tpch_dbgen_src
+
+run:
+  path: sh
+  args: 
+  - -exc
+  - |
+    postgres_src/concourse/scripts/install_postgres.sh
+    postgres_src/concourse/scripts/zedstore_perf_test.sh
+params:
+  EXTRA_CONFIGURE_FLAGS: ""
+  SCALE_FACTOR: 1
