@@ -11,6 +11,9 @@ run:
   args: 
   - -exc
   - |
+    # Install lz4
+    yum install -y liblz4
+
     # Set up postgres user
     getent passwd postgres|| useradd postgres
 
