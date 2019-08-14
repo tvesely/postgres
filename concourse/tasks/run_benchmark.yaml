@@ -20,6 +20,7 @@ run:
 
     postgres_src/concourse/scripts/install_postgres.sh
     su -c "postgres_src/concourse/scripts/initdb.sh" postgres
+    postgres_src/concourse/scripts/gen_data.sh
     su -c "postgres_src/concourse/scripts/zedstore_perf_test.sh" postgres
 params:
   EXTRA_CONFIGURE_FLAGS: ""

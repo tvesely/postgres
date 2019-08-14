@@ -2,12 +2,6 @@
 
 set -xe
 
-# Set the default scale factor to 1, but allow it to be overridden by a
-# session level environment variable
-: ${SCALE_FACTOR:=1}
-
-export SCALE_FACTOR=${SCALE_FACTOR}
-
 if [ -d ${HOME}/workspace/postgres ]; then
     export POSTGRES_SRC_PATH=${HOME}/workspace/postgres
 else
