@@ -13,7 +13,7 @@ run:
   - -exc
   - |
     # Install lz4
-    yum install -y liblz4
+    yum install -y lz4-devel
 
     # Set up postgres user
     getent passwd postgres|| useradd postgres
