@@ -15,6 +15,12 @@ resources:
 - name: tpch_dbgen_src
   type: git
   source:
+    uri: https://github.com/electrum/tpch-dbgen
+    branch: master
+
+- name: vops_src
+  type: git
+  source:
     uri: https://github.com/tvesely/vops
     branch: update_interfaces_to_13_dev
 
@@ -31,6 +37,7 @@ jobs:
     - get: postgres_src
       trigger: true
     - get: tpch_dbgen_src
+    - get: vops_src
     - get: gpdb6_build_image
   - aggregate:
     - task: run_benchmark

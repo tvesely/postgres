@@ -5,6 +5,7 @@ image_resource:
 inputs:
   - name: postgres_src
   - name: tpch_dbgen_src
+  - name: vops_src
 
 run:
   path: sh
@@ -17,8 +18,9 @@ run:
     # Set up postgres user
     getent passwd postgres|| useradd postgres
 
-    su -u postgres -c "postgres_src/concourse/scripts/install_postgres.sh"
-    su -u postgres -c "postgres_src/concourse/scripts/zedstore_perf_test.sh"
+    postgres_src/concourse/scripts/install_postgres.sh
+    su -c "postgres_src/concourse/scripts/createdb.sh" postgres
+    su -c "postgres_src/concourse/scripts/zedstore_perf_test.sh" postgres
 params:
   EXTRA_CONFIGURE_FLAGS: ""
   SCALE_FACTOR: 1

@@ -1,17 +1,26 @@
 #!/bin/bash
 set -xe
 
-if [ -d $HOME/workspace/postgres ]; then
-    POSTGRES_SRC_PATH=$HOME/workspace/postgres
+POSTGRES_INSTALL_DIR=/usr/local/pgsql
+export PATH=${POSTGRES_INSTALL_DIR}/bin:$PATH
+
+if [ -d ${HOME}/workspace/postgres ]; then
+    POSTGRES_SRC_PATH=${HOME}/workspace/postgres
 else
     POSTGRES_SRC_PATH=postgres_src
 fi
 
+if [ -d ${HOME}/workspace/vops ]; then
+    VOPS_SRC_PATH=${HOME}/workspace/vops
+else
+    VOPS_SRC_PATH=vops_src
+fi
+
 pushd ${POSTGRES_SRC_PATH}
-    ./configure ${EXTRA_CONFIGURE_FLAGS} CFLAGS='-O2 -fno-omit-frame-pointer' --enable-cassert --enable-debug
+    ./configure ${EXTRA_CONFIGURE_FLAGS} CFLAGS='-O2 -fno-omit-frame-pointer' --enable-cassert --enable-debug --prefix=${POSTGRES_INSTALL_DIR}
     make -j32 install
 popd
 
-/usr/local/pgsql/bin/initdb -D /tmp/pg_db
-/usr/local/pgsql/bin/pg_ctl -D /tmp/pg_db start -l /tmp/pg_log
-/usr/local/pgsql/bin/createdb
+pushd ${VOPS_SRC_PATH}
+    USE_PGXS=true make -j32 install
+popd
