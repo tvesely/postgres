@@ -44,11 +44,11 @@ jobs:
       file: postgres_src/concourse/tasks/run_benchmark.yaml
       params:
         EXTRA_CONFIGURE_FLAGS: ""
-        SCALE_FACTOR: 10
+        SCALE_FACTOR: {{tpch_scale_factor}}
       image: gpdb6_build_image
     - task: run_benchmark_lz4
       file: postgres_src/concourse/tasks/run_benchmark.yaml
       params:
         EXTRA_CONFIGURE_FLAGS: "--with-lz4"
-        SCALE_FACTOR: 10
+        SCALE_FACTOR: {{tpch_scale_factor}}
       image: gpdb6_build_image
