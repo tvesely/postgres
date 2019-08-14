@@ -19,7 +19,7 @@ run:
     getent passwd postgres|| useradd postgres
 
     postgres_src/concourse/scripts/install_postgres.sh
-    su -c "postgres_src/concourse/scripts/createdb.sh" postgres
+    su -c "postgres_src/concourse/scripts/initdb.sh" postgres
     su -c "postgres_src/concourse/scripts/zedstore_perf_test.sh" postgres
 params:
   EXTRA_CONFIGURE_FLAGS: ""
