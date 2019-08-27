@@ -388,7 +388,9 @@ zsundo_trim(Relation rel, TransactionId OldestXmin)
 	 * not.
 	 */
 	UnlockReleaseBuffer(metabuf);
-
+	
+	if(RecoveryInProgress())
+		return oldest_undorecptr;
 	/*
 	 * Loop through UNDO records, starting from the oldest page, until we
 	 * hit a record that we cannot remove.
