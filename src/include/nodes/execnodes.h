@@ -2041,6 +2041,9 @@ typedef struct AggState
 	AggStatePerGroup *all_pergroups;	/* array of first ->pergroups, than
 										 * ->hash_pergroup */
 	ProjectionInfo *combinedproj;	/* projection machinery */
+	bool *retry_setno;
+	bool memory_exhausted;
+	bool streaming; /* Stream trans values to Finalize Aggregate? */
 } AggState;
 
 /* ----------------

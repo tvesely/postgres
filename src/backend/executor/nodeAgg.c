@@ -306,6 +306,8 @@ static void lookup_hash_entries(AggState *aggstate);
 static TupleTableSlot *agg_retrieve_direct(AggState *aggstate);
 static void agg_fill_hash_table(AggState *aggstate);
 static bool agg_refill_hash_table(AggState *aggstate);
+static void agg_consume_previous_outertuple(AggState *aggstate);
+static void agg_refill_hash_table_from_spillfiles(AggState *aggstate);
 static TupleTableSlot *agg_retrieve_hash_table(AggState *aggstate);
 static TupleTableSlot *agg_retrieve_hash_table_in_memory(AggState *aggstate);
 static Size hash_spill_tuple(HashAggSpill *spill, int input_bits,
@@ -1640,7 +1642,22 @@ lookup_hash_entries(AggState *aggstate)
 		if (pergroup[setno] == NULL)
 		{
 			HashAggSpill *spill;
-			TupleTableSlot *slot = aggstate->tmpcontext->ecxt_outertuple;
+			TupleTableSlot *slot;
+
+		    /*
+		     * If we are streaming, remember which columns need to be re-evaluated next iteration
+		     */
+            if(aggstate->streaming)
+            {
+            	if(aggstate->retry_setno == NULL)
+            	    aggstate->retry_setno = palloc0(sizeof(bool) * aggstate->num_hashes);
+                aggstate->retry_setno[setno] = true;
+                /* TODO: memory_exhausted and hash_spilled mean virtually the same thing in different contexts? */
+                aggstate->memory_exhausted = true;
+                continue;
+            }
+
+			slot = aggstate->tmpcontext->ecxt_outertuple;
 
 			if (aggstate->hash_spills == NULL)
 				aggstate->hash_spills = palloc0(
@@ -2072,6 +2089,9 @@ agg_fill_hash_table(AggState *aggstate)
 		/* Advance the aggregates (or combine functions) */
 		advance_aggregates(aggstate);
 
+		if(aggstate->streaming && aggstate->memory_exhausted)
+			break;
+
 		/*
 		 * Reset per-input-tuple context after each tuple, but note that the
 		 * hash lookups do this too
@@ -2103,14 +2123,14 @@ agg_fill_hash_table(AggState *aggstate)
 static bool
 agg_refill_hash_table(AggState *aggstate)
 {
-	HashAggBatch	*batch;
 	AggStatePerGroup *pergroup;
 
 	if (aggstate->hash_batches == NIL)
 		return false;
 
 	pergroup = aggstate->all_pergroups;
-	while(pergroup != aggstate->hash_pergroup) {
+	while (pergroup != aggstate->hash_pergroup)
+	{
 		*pergroup = NULL;
 		pergroup++;
 	}
@@ -2120,9 +2140,6 @@ agg_refill_hash_table(AggState *aggstate)
 	/* Rebuild an empty hash table */
 	build_hash_table(aggstate);
 
-	batch = linitial(aggstate->hash_batches);
-	aggstate->hash_batches = list_delete_first(aggstate->hash_batches);
-
 	Assert(aggstate->current_phase == 0);
 
 	/*
@@ -2131,8 +2148,31 @@ agg_refill_hash_table(AggState *aggstate)
 	if (aggstate->phase->aggstrategy == AGG_MIXED)
 	{
 		aggstate->current_phase = 1;
-		aggstate->phase = &aggstate->phases[aggstate->current_phase];
+		aggstate->phase         = &aggstate->phases[aggstate->current_phase];
 	}
+	if (aggstate->streaming)
+	{
+		agg_consume_previous_outertuple(aggstate);
+		agg_fill_hash_table(aggstate);
+	}
+	else
+		agg_refill_hash_table_from_spillfiles(aggstate);
+
+	return true;
+}
+
+static void
+agg_consume_previous_outertuple(AggState *aggstate)
+{
+	return;
+}
+
+static void
+agg_refill_hash_table_from_spillfiles(AggState *aggstate)
+{
+	HashAggBatch	*batch;
+	batch = linitial(aggstate->hash_batches);
+	aggstate->hash_batches = list_delete_first(aggstate->hash_batches);
 
 	for (;;) {
 		TupleTableSlot	*slot = aggstate->hash_spill_slot;
@@ -2180,16 +2220,14 @@ agg_refill_hash_table(AggState *aggstate)
 	aggstate->phase = &aggstate->phases[aggstate->current_phase];
 
 	hash_spill_finish(aggstate, &batch->spill, batch->setno,
-					  batch->input_bits);
+	                  batch->input_bits);
 
 	pfree(batch);
 
 	/* Initialize to walk the first hash table */
 	select_current_set(aggstate, 0, true);
 	ResetTupleHashIterator(aggstate->perhash[0].hashtable,
-						   &aggstate->perhash[0].hashiter);
-
-	return true;
+	                       &aggstate->perhash[0].hashiter);
 }
 
 /*
@@ -2665,6 +2703,8 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 	aggstate->grp_firstTuple = NULL;
 	aggstate->sort_in = NULL;
 	aggstate->sort_out = NULL;
+	aggstate->memory_exhausted = false;
+	aggstate->streaming = node->streaming;
 
 	/*
 	 * phases[0] always exists, but is dummy in sorted/plain mode

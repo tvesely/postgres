@@ -813,6 +813,7 @@ typedef struct Agg
 	/* Note: planner provides numGroups & aggParams only in HASHED/MIXED case */
 	List	   *groupingSets;	/* grouping sets to use */
 	List	   *chain;			/* chained Agg/Sort nodes */
+	bool        streaming;      /* Stream trans values to Finalize aggregates? */
 } Agg;
 
 /* ----------------
