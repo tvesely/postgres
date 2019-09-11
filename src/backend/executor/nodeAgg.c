@@ -306,7 +306,6 @@ static void lookup_hash_entries(AggState *aggstate);
 static TupleTableSlot *agg_retrieve_direct(AggState *aggstate);
 static void agg_fill_hash_table(AggState *aggstate);
 static bool agg_refill_hash_table(AggState *aggstate);
-static void agg_consume_previous_outertuple(AggState *aggstate);
 static void agg_refill_hash_table_from_spillfiles(AggState *aggstate);
 static TupleTableSlot *agg_retrieve_hash_table(AggState *aggstate);
 static TupleTableSlot *agg_retrieve_hash_table_in_memory(AggState *aggstate);
@@ -320,6 +319,8 @@ static void hash_spill_finish(AggState *aggstate, HashAggSpill *spill,
 							  int setno, int input_bits);
 static void hash_reset_spill(HashAggSpill *spill);
 static void hash_reset_spills(AggState *aggstate);
+static void hash_stream_finish_previous_batch(AggState *aggstate);
+static void hash_stream_finish(AggState *aggstate, int setno);
 static Datum GetAggInitVal(Datum textInitVal, Oid transtype);
 static void build_pertrans_for_aggref(AggStatePerTrans pertrans,
 									  AggState *aggstate, EState *estate,
@@ -2125,7 +2126,7 @@ agg_refill_hash_table(AggState *aggstate)
 {
 	AggStatePerGroup *pergroup;
 
-	if (aggstate->hash_batches == NIL)
+	if (aggstate->hash_batches == NIL && !aggstate->memory_exhausted)
 		return false;
 
 	pergroup = aggstate->all_pergroups;
@@ -2152,7 +2153,7 @@ agg_refill_hash_table(AggState *aggstate)
 	}
 	if (aggstate->streaming)
 	{
-		agg_consume_previous_outertuple(aggstate);
+		hash_stream_finish_previous_batch(aggstate);
 		agg_fill_hash_table(aggstate);
 	}
 	else
@@ -2160,13 +2161,6 @@ agg_refill_hash_table(AggState *aggstate)
 
 	return true;
 }
-
-static void
-agg_consume_previous_outertuple(AggState *aggstate)
-{
-	return;
-}
-
 static void
 agg_refill_hash_table_from_spillfiles(AggState *aggstate)
 {
@@ -2640,6 +2634,51 @@ hash_reset_spills(AggState *aggstate)
 	aggstate->hash_batches = NIL;
 }
 
+static void
+hash_stream_finish_previous_batch(AggState *aggstate) {
+	int setno;
+	for(setno = 0; setno < aggstate->num_hashes; setno++) {
+		if (aggstate->retry_setno[setno] == true)
+		{
+			hash_stream_finish(aggstate, setno);
+			aggstate->retry_setno[setno] = false;
+		}
+	}
+	aggstate->memory_exhausted = false;
+}
+
+static void
+hash_stream_finish(AggState *aggstate, int setno)
+{
+	uint32			 hash;
+	CHECK_FOR_INTERRUPTS();
+
+	/* Find or build hashtable entries */
+	memset(aggstate->hash_pergroup, 0,
+	       sizeof(AggStatePerGroup) * aggstate->num_hashes);
+	select_current_set(aggstate, setno, true);
+	prepare_hash_slot(aggstate);
+	hash = calculate_hash(aggstate);
+	aggstate->hash_pergroup[setno] = lookup_hash_entry(aggstate, hash);
+	/*
+	 * TODO: if hash streaming fails at this point, turn off streaming and
+	 *       spill anyway
+	 */
+	if (aggstate->hash_pergroup[setno] == NULL)
+		elog(ERROR, "Not enough memory to agg_stream_bottom.");
+		
+
+	/* Advance the aggregates (or combine functions) */
+	advance_aggregates(aggstate);
+
+	/*
+	 * Reset per-input-tuple context after each tuple, but note that the
+	 * hash lookups do this too
+	 */
+	ResetExprContext(aggstate->tmpcontext);
+	
+}
+
 
 /* -----------------
  * ExecInitAgg
@@ -2704,7 +2743,10 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 	aggstate->sort_in = NULL;
 	aggstate->sort_out = NULL;
 	aggstate->memory_exhausted = false;
-	aggstate->streaming = node->streaming;
+	//aggstate->streaming = node->streaming;
+	// TODO: turn streaming on based on planner stats
+	if(aggstate->aggsplit == AGGSPLIT_INITIAL_SERIAL)
+		aggstate->streaming = true;
 
 	/*
 	 * phases[0] always exists, but is dummy in sorted/plain mode
