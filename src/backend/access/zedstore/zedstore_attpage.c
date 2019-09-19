@@ -591,8 +591,14 @@ zsbt_attr_add(Relation rel, AttrNumber attno, attstream_buffer *attbuf)
 
 			merge_attstream_buffer(attr, &tmpbuf, attbuf);
 
+			elog(LOG, "zsbt_attr_add freeing attbuf->data - attbuf->data %p, memory context %s",
+				attbuf->data,
+				GetMemoryChunkContext(attbuf->data)->name);
 			pfree(attbuf->data);
 			*attbuf = tmpbuf;
+			elog(LOG, "zsbt_attr_add replaced attbuf with tmpbuf - attbuf->data %p, memory context %s",
+				attbuf->data,
+				GetMemoryChunkContext(attbuf->data)->name);
 		}
 		else if (lowerstream)
 		{

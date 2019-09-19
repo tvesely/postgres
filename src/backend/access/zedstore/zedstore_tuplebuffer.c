@@ -277,6 +277,9 @@ zsbt_attbuffer_init(Form_pg_attribute attr, attbuffer *attbuffer)
 
 #define ATTBUF_INIT_SIZE 1024
 	attbuf->data = palloc(ATTBUF_INIT_SIZE);
+	elog(LOG, "zsbt_attbuffer_init - attbuf->data %p, memory context %s",
+		attbuf->data,
+		GetMemoryChunkContext(attbuf->data)->name);
 	attbuf->len = 0;
 	attbuf->maxlen = ATTBUF_INIT_SIZE;
 	attbuf->cursor = 0;
@@ -432,6 +435,14 @@ zsbt_tuplebuffer_flush(Relation rel)
 	if (!tupbuffer)
 		return;
 
+	for (int attno = 0 ; attno < tupbuffer->natts; attno++)
+	{
+		attbuffer *attbuf = &(tupbuffer->attbuffers[attno]);
+		elog(LOG, "zsbt_tuplebuffer_flush BEFORE flush - attno %d, attbuf->chunks.data %p, memory context %s",
+			attno, attbuf->chunks.data,
+			GetMemoryChunkContext(attbuf->chunks.data)->name);
+	}
+
 	tuplebuffer_flush_internal(rel, tupbuffer);
 
 	tuplebuffers_delete(tuplebuffers, RelationGetRelid(rel));
@@ -440,6 +451,9 @@ zsbt_tuplebuffer_flush(Relation rel)
 	for (int i = 0 ; i < tupbuffer->natts; i++)
 	{
 		attbuffer *attbuf = &(tupbuffer->attbuffers[i]);
+		elog(LOG, "zsbt_tuplebuffer_flush AFTER flush freeing buffers - attno %d, attbuf->chunks.data %p, memory context %s",
+			i, attbuf->chunks.data,
+			GetMemoryChunkContext(attbuf->chunks.data)->name);
 		pfree(attbuf->chunks.data);
 	}
 	pfree(tupbuffer->attbuffers);

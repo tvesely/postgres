@@ -338,6 +338,9 @@ create_attstream(attstream_buffer *dst, bool attbyval, int16 attlen,
 
 #define INIT_ATTREAM_BUF_SIZE 1024
 	dst->data = palloc(INIT_ATTREAM_BUF_SIZE);
+	elog(LOG, "create_attstream - dst->data %p, memory context %s",
+			dst->data,
+			GetMemoryChunkContext(dst->data)->name);
 	dst->len = 0;
 	dst->maxlen = INIT_ATTREAM_BUF_SIZE;
 	dst->cursor = 0;
@@ -476,6 +479,9 @@ chop_attstream(attstream_buffer *buf, int pos, zstid lasttid)
 			   tmpbuf.data + tmpbuf.cursor,
 			   tmpbuf.len - tmpbuf.cursor);
 
+		elog(LOG, "chop_attstream freeing tmpbuf.data - tmpbuf.data %p, memory context %s",
+			tmpbuf.data,
+			GetMemoryChunkContext(tmpbuf.data)->name);
 		pfree(tmpbuf.data);
 
 	}
@@ -524,6 +530,9 @@ init_attstream_buffer_from_stream(attstream_buffer *buf, bool attbyval, int16 at
 		buf_size = attstream->t_size - SizeOfZSAttStreamHeader;
 
 	buf->data = MemoryContextAlloc(memcontext, buf_size);
+	elog(LOG, "init_attstream_buffer_from_stream - buf->data %p, memory context %s",
+		buf->data,
+		GetMemoryChunkContext(buf->data)->name);
 	buf->len = 0;
 	buf->maxlen = buf_size;
 	buf->cursor = 0;
@@ -553,6 +562,9 @@ init_attstream_buffer(attstream_buffer *buf, bool attbyval, int16 attlen)
 {
 #define ATTBUF_INIT_SIZE 1024
 	buf->data = palloc(ATTBUF_INIT_SIZE);
+	elog(LOG, "init_attstream_buffer - buf->data %p, memory context %s",
+		buf->data,
+		GetMemoryChunkContext(buf->data)->name);
 	buf->len = 0;
 	buf->maxlen = ATTBUF_INIT_SIZE;
 	buf->cursor = 0;
