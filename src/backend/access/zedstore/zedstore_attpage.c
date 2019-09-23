@@ -563,18 +563,16 @@ zsbt_attr_add(Relation rel, AttrNumber attno, attstream_buffer *attbuf)
 		 */
 		zstid		mintid = attbuf->firsttid;
 
-#if 0
 		BlockNumber	blkno = BufferGetBlockNumber(origbuf);
 
 		if (upperstream && lowerstream)
-			elog(NOTICE, "block number %u merging upper %d lower %d new %d", blkno, upperstream->t_decompressed_size, lowerstream->t_size, attbuf->len - attbuf->cursor);
+			elog(LOG, "block number %u merging upper %d lower %d new %d", blkno, upperstream->t_decompressed_size, lowerstream->t_size, attbuf->len - attbuf->cursor);
 		else if (upperstream)
-			elog(NOTICE, "block number %u merging upper %d new %d", blkno, upperstream->t_decompressed_size, attbuf->len - attbuf->cursor);
+			elog(LOG, "block number %u merging upper %d new %d", blkno, upperstream->t_decompressed_size, attbuf->len - attbuf->cursor);
 		else if (lowerstream)
-			elog(NOTICE, "block number %u merging lower %d new %d", blkno, lowerstream->t_size, attbuf->len - attbuf->cursor);
+			elog(LOG, "block number %u merging lower %d new %d", blkno, lowerstream->t_size, attbuf->len - attbuf->cursor);
 		else if (lowerstream)
-			elog(NOTICE, "block number %u merging new %d", blkno, attbuf->len - attbuf->cursor);
-#endif
+			elog(LOG, "block number %u merging new %d", blkno, attbuf->len - attbuf->cursor);
 
 		/* merge the old items to the working buffer */
 		if (upperstream && lowerstream)

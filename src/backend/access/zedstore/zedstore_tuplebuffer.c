@@ -97,6 +97,7 @@ get_tuplebuffer(Relation rel)
 												 "ZedstoreAMTupleBuffers",
 												 ALLOCSET_DEFAULT_SIZES);
 		tuplebuffers = tuplebuffers_create(tuplebuffers_cxt, 10, NULL);
+		elog(LOG, "get_tuplebuffer created tuplebuffers: %p", tuplebuffers);
 	}
 retry:
 	tupbuffer = tuplebuffers_insert(tuplebuffers, RelationGetRelid(rel), &found);
@@ -110,6 +111,9 @@ retry:
 		natts = rel->rd_att->natts;
 		tupbuffer->attbuffers = palloc(natts * sizeof(attbuffer));
 		tupbuffer->natts = natts;
+
+		elog(LOG, "get_tuplebuffer got tupbuffer: %p", tupbuffer);
+		elog(LOG, "get_tuplebuffer allocated attbuffers: %p", tupbuffer->attbuffers);
 
 		for (attno = 1; attno <= natts; attno++)
 		{
@@ -435,6 +439,9 @@ zsbt_tuplebuffer_flush(Relation rel)
 	if (!tupbuffer)
 		return;
 
+	elog(LOG, "zsbt_tuplebuffer_flush tupbuffer address: %p", tupbuffer);
+	elog(LOG, "zsbt_tuplebuffer_flush attbuffers address: %p", tupbuffer->attbuffers);
+
 	for (int attno = 0 ; attno < tupbuffer->natts; attno++)
 	{
 		attbuffer *attbuf = &(tupbuffer->attbuffers[attno]);
@@ -457,6 +464,9 @@ zsbt_tuplebuffer_flush(Relation rel)
 		pfree(attbuf->chunks.data);
 	}
 	pfree(tupbuffer->attbuffers);
+
+	tupbuffer->natts=0;
+	//memset(tupbuffer, 0, sizeof(tuplebuffer));
 }
 
 static void
