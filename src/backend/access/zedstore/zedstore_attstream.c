@@ -63,6 +63,8 @@
  */
 #include "postgres.h"
 
+#include "access/detoast.h"
+#include "access/toast_internals.h"
 #include "access/zedstore_internal.h"
 #include "miscadmin.h"
 #include "utils/datum.h"
@@ -1643,7 +1645,7 @@ encode_chunk_fixed(attstream_buffer *dst, zstid prevtid, int ntids,
  * on the mode, puts a cap on the max chunk size. For example, in mode 4,
  * we encode 10 TIDs in a codeword with 4 bits to store the length. With four
  * bits, each datum can be max 14 bytes long. That limits the max size of a
- * chunk in mode 4 to 4*14 = 140 bytes. Below table shows the modes with the
+ * chunk in mode 4 to 10*14 = 140 bytes. Below table shows the modes with the
  * number of bits use for the TID and length of each datum, and the maximum
  * chunk size they give (not including the size of the codeword itself)
  *
@@ -1671,9 +1673,20 @@ encode_chunk_fixed(attstream_buffer *dst, zstid prevtid, int ntids,
  * have special modes, like the toast pointer, at the end. We could use
  * 13 for another "regular" mode.. )
  *
- * Mode 14 is special: It is used to encode a toast pointer. The TID of
- * the datum is stored in the codeword as is, and after the codeword
- * comes the block number of the first toast block, as a 32-bit integer.
+ * Mode 14 is special: It is used to encode a toast pointer.  The
+ * lenbits field is overloaded and is used to encode the toast mode.
+ * The toast mode determines whether the toast datum is stored inline
+ * or in seperate toast pages. The datum is compressed with the
+ * toast_compress_datum() for both the inline mode and the toast page
+ * mode.
+ *
+ * In the inline mode, The TID of the datum is stored in the codeword
+ * as is, and after the codeword comes the zs_toast_header_inline
+ * followed by the compressed datum.
+ *
+ * In the toast page mode, The TID of the datum is stored in the
+ * codeword as is, and after the codeword comes the block number of
+ * the first toast block, as a 32-bit integer.
  *
  * FIXME: Mode 12 is the widest mode, but it only uses up to 45 bits for
  * the TID. That's not enough to cover the whole range of valid zstids.
@@ -1704,11 +1717,50 @@ static const struct
 
 	/* special modes */
 	{ 0, 0, 0 },	/* mode 13 (unused) */
-	{ 48, 0, 1 },	/* mode 14: toast pointer) */
+	{ 48, 12, 1 },	/* mode 14 (toast pointer) */
 	{ 0, 0, 0 },	/* mode 15 */
 
 	{ 0, 0, 0 }		/* sentinel */
 };
+
+#define ZS_VARLENA_INLINE_TOAST 1
+#define ZS_VARLENA_TOAST_PAGE 0
+
+typedef struct zs_toast_header_external {
+	BlockNumber toast_blkno;
+} zs_toast_header_external;
+
+typedef struct zs_toast_header_inline
+{
+	uint32 compressed_size;
+	uint32 rawsize;
+} zs_toast_header_inline;
+
+static int
+get_toast_chunk_length(char *chunk, uint64 toast_mode_selector)
+{
+	int chunk_len;
+
+	if (toast_mode_selector == ZS_VARLENA_INLINE_TOAST)
+	{
+		zs_toast_header_inline *hdr;
+		chunk_len = sizeof(uint64) + sizeof(hdr);
+
+		hdr = (zs_toast_header_inline *) (chunk + sizeof(uint64));
+		chunk_len += hdr->compressed_size;
+	}
+	else if (toast_mode_selector == ZS_VARLENA_TOAST_PAGE)
+	{
+		zs_toast_header_external *hdr;
+		chunk_len = sizeof(uint64) + sizeof(hdr);
+	}
+	else
+	{
+		elog(ERROR, "Invalid toast chunk type");
+	}
+
+	return chunk_len;
+}
 
 static int
 get_chunk_length_varlen(char *chunk)
@@ -1725,14 +1777,14 @@ get_chunk_length_varlen(char *chunk)
 		uint64		lenmask = (UINT64CONST(1) << lenbits) - 1;
 		int			total_len;
 
+		/* skip over the TIDs */
+		codeword >>= tidbits * nints;
+
 		if (selector == 14)
 		{
 			/* toast pointer */
-			return sizeof(uint64) + sizeof(BlockNumber);
+			return get_toast_chunk_length(chunk, codeword & lenmask);
 		}
-
-		/* skip over the TIDs */
-		codeword >>= tidbits * nints;
 
 		/* Sum up the lengths */
 		total_len = 0;
@@ -1814,7 +1866,8 @@ skip_chunk_varlen(char *chunk, zstid *lasttid)
 		{
 			/* toast pointer */
 			*lasttid = tid + (codeword & mask);
-			return sizeof(uint64) + sizeof(BlockNumber);
+			codeword >>= tidbits * nints;
+			return get_toast_chunk_length(chunk, codeword & lenmask);
 		}
 
 		for (int i = 0; i < nints; i++)
@@ -1864,21 +1917,44 @@ decode_chunk_varlen(zstid *lasttid, char *chunk,
 
 		if (selector == 14)
 		{
-			/* toast pointer */
-			BlockNumber toastblkno;
-			varatt_zs_toastptr *toastptr;
-
 			tid += (codeword & tidmask);
 
-			memcpy(&toastblkno, p, sizeof(BlockNumber));
-			p += sizeof(BlockNumber);
+			if ((codeword >> (tidbits * nints)) & lenmask & ZS_VARLENA_INLINE_TOAST)
+			{
+				zs_toast_header_inline hdr;
+				uint32 len;
 
-			toastptr = palloc0(sizeof(varatt_zs_toastptr));
-			SET_VARTAG_1B_E(toastptr, VARTAG_ZEDSTORE);
-			toastptr->zst_block = toastblkno;
+				memcpy(&hdr, p, sizeof(hdr));
+				p += sizeof(hdr);
+
+				len = hdr.compressed_size;
+				datump = palloc0(len + TOAST_COMPRESS_HDRSZ);
+				SET_VARSIZE_COMPRESSED(datump, len + TOAST_COMPRESS_HDRSZ);
+				TOAST_COMPRESS_SET_RAWSIZE(datump, hdr.rawsize);
+				memcpy(datump + TOAST_COMPRESS_HDRSZ, p, len);
+				p += len;
+
+				datums[0] = PointerGetDatum(datump);
+			}
+			else
+			{
+				zs_toast_header_external hdr;
+
+				memcpy(&hdr, p, sizeof(hdr));
+				p += sizeof(hdr);
+
+				/* toast pointer */
+				BlockNumber toastblkno = hdr.toast_blkno;
+				varatt_zs_toastptr *toastptr;
+
+				toastptr = palloc0(sizeof(varatt_zs_toastptr));
+				SET_VARTAG_1B_E(toastptr, VARTAG_ZEDSTORE);
+				toastptr->zst_block = toastblkno;
+
+				datums[0] = PointerGetDatum(toastptr);
+			}
 
 			tids[0] = tid;
-			datums[0] = PointerGetDatum(toastptr);
 			isnulls[0] = false;
 			*num_elems = 1;
 
@@ -1928,6 +2004,57 @@ decode_chunk_varlen(zstid *lasttid, char *chunk,
 }
 
 static int
+encode_chunk_varlen_inline_toast(attstream_buffer *dst, zstid prevtid,
+									zstid *tids, Datum *datums)
+{
+	uint32 len;
+	uint64		codeword;
+	char	   *p;
+
+	zs_toast_header_inline hdr;
+	hdr.compressed_size = TOAST_COMPRESS_SIZE(datums[0]);
+	hdr.rawsize = TOAST_COMPRESS_RAWSIZE(datums[0]);
+	len = hdr.compressed_size;
+
+	codeword = UINT64CONST(14) << 12;
+	codeword = (codeword | ((uint64)ZS_VARLENA_INLINE_TOAST)) << 48;
+	codeword = codeword | (tids[0] - prevtid);
+
+	enlarge_attstream_buffer(dst, sizeof(uint64) +
+		sizeof(zs_toast_header_inline) + len);
+	p = dst->data + dst->len;
+	memcpy(p, (char *) &codeword, sizeof(uint64));
+	p += sizeof(uint64);
+	memcpy(p, (char *) &hdr, sizeof(zs_toast_header_inline));
+	p += sizeof(zs_toast_header_inline);
+	memcpy(p, (char *) TOAST_COMPRESS_RAWDATA(datums[0]), len);
+	dst->len += sizeof(uint64) + sizeof(zs_toast_header_inline) + len;
+	return 1;
+}
+
+static int
+encode_chunk_varlen_toast_page(attstream_buffer *dst, zstid prevtid, zstid *tids, Datum * datums)
+{
+	int64 codeword;
+	char *p;
+	zs_toast_header_external hdr;
+	varatt_zs_toastptr *toastptr = (varatt_zs_toastptr *) DatumGetPointer(datums[0]);
+	hdr.toast_blkno = toastptr->zst_block;
+
+	codeword = UINT64CONST(14) << 12;
+	codeword = (codeword | ((uint64)ZS_VARLENA_TOAST_PAGE)) << 48;
+	codeword = codeword | (tids[0] - prevtid);
+
+	enlarge_attstream_buffer(dst, sizeof(uint64) + sizeof(zs_toast_header_external));
+	p = dst->data + dst->len;
+	memcpy(p, (char *) &codeword, sizeof(uint64));
+	p += sizeof(uint64);
+	memcpy(p, (char *) &hdr, sizeof(zs_toast_header_external));
+	dst->len += sizeof(uint64) + sizeof(zs_toast_header_external);
+	return 1;
+}
+
+static int
 encode_chunk_varlen(attstream_buffer *dst, zstid prevtid, int ntids,
 					zstid *tids, Datum *datums, bool *isnulls)
 {
@@ -1957,22 +2084,13 @@ encode_chunk_varlen(attstream_buffer *dst, zstid prevtid, int ntids,
 	uint64		deltas[60];
 	char	   *p;
 
+	/* special case for inline toast */
+	if (!isnulls[0] && VARATT_IS_COMPRESSED(datums[0]))
+		return encode_chunk_varlen_inline_toast(dst, prevtid, tids, datums);
+
 	/* special case for toast pointers */
-	if (!isnulls[0] && VARATT_IS_EXTERNAL(datums[0]) && VARTAG_EXTERNAL(datums[0]) == VARTAG_ZEDSTORE)
-	{
-		varatt_zs_toastptr *toastptr = (varatt_zs_toastptr *) DatumGetPointer(datums[0]);
-		BlockNumber toastblkno = toastptr->zst_block;
-
-		codeword = UINT64CONST(14) << 60 | (tids[0] - prevtid);
-
-		enlarge_attstream_buffer(dst, sizeof(uint64) + sizeof(BlockNumber));
-		p = dst->data + dst->len;
-		memcpy(p, (char *) &codeword, sizeof(uint64));
-		p += sizeof(uint64);
-		memcpy(p, (char *) &toastblkno, sizeof(BlockNumber));
-		dst->len += sizeof(uint64) + sizeof(BlockNumber);
-		return 1;
-	}
+	else if (!isnulls[0] && VARATT_IS_EXTERNAL(datums[0]) && VARTAG_EXTERNAL(datums[0]) == VARTAG_ZEDSTORE)
+		return encode_chunk_varlen_toast_page(dst, prevtid, tids, datums);
 
 	selector = 0;
 	this_nints = varlen_modes[0].num_ints;
@@ -2017,7 +2135,8 @@ encode_chunk_varlen(attstream_buffer *dst, zstid prevtid, int ntids,
 					len = 0;
 				else
 				{
-					if (VARATT_IS_EXTERNAL(datums[i]) && VARTAG_EXTERNAL(datums[i]) == VARTAG_ZEDSTORE)
+					if ((VARATT_IS_EXTERNAL(datums[i]) && VARTAG_EXTERNAL(datums[i]) == VARTAG_ZEDSTORE) ||
+						VARATT_IS_COMPRESSED(datums[i]))
 					{
 						/* toast pointer, bail out */
 						val = PG_UINT64_MAX;
