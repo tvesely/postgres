@@ -1744,15 +1744,14 @@ get_toast_chunk_length(char *chunk, uint64 toast_mode_selector)
 	if (toast_mode_selector == ZS_VARLENA_INLINE_TOAST)
 	{
 		zs_toast_header_inline *hdr;
-		chunk_len = sizeof(uint64) + sizeof(hdr);
+		chunk_len = sizeof(uint64) + sizeof(zs_toast_header_inline);
 
 		hdr = (zs_toast_header_inline *) (chunk + sizeof(uint64));
 		chunk_len += hdr->compressed_size;
 	}
 	else if (toast_mode_selector == ZS_VARLENA_TOAST_PAGE)
 	{
-		zs_toast_header_external *hdr;
-		chunk_len = sizeof(uint64) + sizeof(hdr);
+		chunk_len = sizeof(uint64) + sizeof(zs_toast_header_external);
 	}
 	else
 	{
@@ -1924,8 +1923,8 @@ decode_chunk_varlen(zstid *lasttid, char *chunk,
 				zs_toast_header_inline hdr;
 				uint32 len;
 
-				memcpy(&hdr, p, sizeof(hdr));
-				p += sizeof(hdr);
+				memcpy(&hdr, p, sizeof(zs_toast_header_inline));
+				p += sizeof(zs_toast_header_inline);
 
 				len = hdr.compressed_size;
 				datump = palloc0(len + TOAST_COMPRESS_HDRSZ);
@@ -1940,8 +1939,8 @@ decode_chunk_varlen(zstid *lasttid, char *chunk,
 			{
 				zs_toast_header_external hdr;
 
-				memcpy(&hdr, p, sizeof(hdr));
-				p += sizeof(hdr);
+				memcpy(&hdr, p, sizeof(zs_toast_header_external));
+				p += sizeof(zs_toast_header_external);
 
 				/* toast pointer */
 				BlockNumber toastblkno = hdr.toast_blkno;
