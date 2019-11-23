@@ -26,6 +26,15 @@ typedef uint64	zstid;
 
 #define MaxZSTidOffsetNumber	129
 
+/* fmgr interface macros */
+#ifdef USE_FLOAT8_BYVAL
+#define ZSTidGetDatum(X) Int64GetDatum(X)
+#define DatumGetZSTid(X) ((zstid) (X))
+#else
+#define ZSTidGetDatum(X) PointerGetDatum(X)
+#define DatumGetZSTid(X) (* ((zstid*) DatumGetPointer(X)))
+#endif
+
 static inline zstid
 ZSTidFromBlkOff(BlockNumber blk, OffsetNumber off)
 {

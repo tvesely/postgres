@@ -221,7 +221,7 @@ decode_chunks_begin(attstream_decoder *decoder, char *chunks, int chunkslen, zst
  * starttid/endtid. Or provide a separate "fast forward" function.
  */
 bool
-decode_attstream_cont(attstream_decoder *decoder)
+decode_attstream_cont(attstream_decoder *decoder, bool one_chunk)
 {
 	zstid		lasttid;
 	int			total_decoded;
@@ -255,6 +255,8 @@ decode_attstream_cont(attstream_decoder *decoder)
 						  &decoder->datums[total_decoded],
 						  &decoder->isnulls[total_decoded]);
 		total_decoded += num_decoded;
+		if (one_chunk)
+			break;
 	}
 
 	MemoryContextSwitchTo(oldcxt);
@@ -595,7 +597,7 @@ vacuum_attstream(Relation rel, AttrNumber attno, attstream_buffer *dst,
 
 	num_buffered = 0;
 	removeidx = 0;
-	while (decode_attstream_cont(&decoder))
+	while (decode_attstream_cont(&decoder, false))
 	{
 		for (int idx = 0; idx < decoder.num_elements; idx++)
 		{
@@ -784,12 +786,12 @@ merge_attstream_guts(Form_pg_attribute attr, attstream_buffer *buf, char *chunks
 	 */
 	init_attstream_decoder(&decoder1, attr->attbyval, attr->attlen);
 	decode_chunks_begin(&decoder1, buf->data + buf->cursor, buf->len - buf->cursor, buf->lasttid);
-	decoder1_continues = decode_attstream_cont(&decoder1);
+	decoder1_continues = decode_attstream_cont(&decoder1, false);
 	decoder1_idx = 0;
 
 	init_attstream_decoder(&decoder2, attr->attbyval, attr->attlen);
 	decode_chunks_begin(&decoder2, chunks2, chunks2len, lasttid2);
-	decoder2_continues = decode_attstream_cont(&decoder2);
+	decoder2_continues = decode_attstream_cont(&decoder2, false);
 	decoder2_idx = 0;
 
 	buffer_size = 1000;		/* arbitrary initial size */
@@ -885,7 +887,7 @@ merge_attstream_guts(Form_pg_attribute attr, attstream_buffer *buf, char *chunks
 
 		if (*decodernext_idx == decodernext->num_elements)
 		{
-			*decodernext_continues = decode_attstream_cont(decodernext);
+			*decodernext_continues = decode_attstream_cont(decodernext, false);
 			*decodernext_idx = 0;
 		}
 	}
