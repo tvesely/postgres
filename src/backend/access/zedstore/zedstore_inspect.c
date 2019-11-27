@@ -426,7 +426,7 @@ pg_zs_toast_pages(PG_FUNCTION_ARGS)
  * isnulls[] bool
  */
 Datum
-pg_zs_dump_attstream(PG_FUNCTION_ARGS)
+pg_zs_dump_attstreams(PG_FUNCTION_ARGS)
 {
 	Oid			relid = PG_GETARG_OID(0);
 	BlockNumber blkno = PG_GETARG_INT64(1);
@@ -548,6 +548,10 @@ pg_zs_dump_attstream(PG_FUNCTION_ARGS)
 	for (int i = 0; i < nstreams; i++)
 	{
 		ZSAttStream *stream = streams[i];
+		bytea *chunk;
+		zstid prevtid;
+		zstid firsttid;
+		zstid lasttid;
 
 		init_attstream_decoder(&decoder, attbyval, attlen);
 		decode_attstream_begin(&decoder, stream);
@@ -555,12 +559,8 @@ pg_zs_dump_attstream(PG_FUNCTION_ARGS)
 		chunkno = 0;
 		chunk_start = decoder.pos;
 
-		while (decode_attstream_cont(&decoder, true))
+		while (get_attstream_chunk_cont(&decoder, &prevtid, &firsttid, &lasttid, &chunk))
 		{
-			ArrayBuildState *astate_tids = NULL;
-			ArrayBuildState *astate_datums = NULL;
-			ArrayBuildState *astate_isnulls = NULL;
-
 			values[0] = Int16GetDatum(opaque->zs_attno);
 			values[1] = Int32GetDatum(chunkno);
 			chunkno++;
@@ -574,60 +574,10 @@ pg_zs_dump_attstream(PG_FUNCTION_ARGS)
 			values[7] = Int32GetDatum(decoder.pos - chunk_start);
 			chunk_start = decoder.pos;
 
-			values[8] = Int32GetDatum(decoder.num_elements);
-			values[9] = ZSTidGetDatum(decoder.firsttid);
-			values[10] = ZSTidGetDatum(decoder.lasttid);
-
-			for (int i = 0; i < decoder.num_elements; i++)
-			{
-				/*
-				 * TODO: What memory context should this be in?
-				 */
-				bytea *attr_data;
-
-				astate_tids = accumArrayResult(astate_tids,
-											   ZSTidGetDatum(decoder.tids[i]),
-											   false,
-											   ZSTIDOID,
-											   CurrentMemoryContext);
-				/*
-				 * Fixed length, attribute by value
-				 */
-				if(attbyval && attlen > 0)
-				{
-					attr_data = (bytea *) palloc(attlen + VARHDRSZ);
-					SET_VARSIZE(attr_data, attlen + VARHDRSZ);
-					memcpy(VARDATA(attr_data), &decoder.datums[i], attlen);
-				}
-				else if (!attbyval && attlen > 0)
-				{
-					attr_data = (bytea *) palloc(attlen + VARHDRSZ);
-					SET_VARSIZE(attr_data, attlen + VARHDRSZ);
-					memcpy(VARDATA(attr_data), DatumGetPointer(decoder.datums[i]), attlen);
-				}
-				else if (attlen < 0)
-				{
-					int len;
-					len = VARSIZE_ANY_EXHDR(DatumGetPointer(decoder.datums[i]));
-					attr_data = (bytea *) palloc(len + VARHDRSZ);
-					SET_VARSIZE(attr_data, len + VARHDRSZ);
-					memcpy(VARDATA(attr_data), VARDATA_ANY(DatumGetPointer(decoder.datums[i])), len);
-				}
-				astate_datums = accumArrayResult(astate_datums,
-				                                 PointerGetDatum(attr_data),
-												 false,
-												 BYTEAOID,
-												 CurrentMemoryContext);
-				astate_isnulls = accumArrayResult(astate_isnulls,
-											   BoolGetDatum(decoder.isnulls[i]),
-											   false,
-											   BOOLOID,
-											   CurrentMemoryContext);
-			}
-
-			values[11] = PointerGetDatum(makeArrayResult(astate_tids, CurrentMemoryContext));
-			values[12] = PointerGetDatum(makeArrayResult(astate_datums, CurrentMemoryContext));
-			values[13] = PointerGetDatum(makeArrayResult(astate_isnulls, CurrentMemoryContext));
+			values[8] = ZSTidGetDatum(prevtid);
+			values[9] = ZSTidGetDatum(firsttid);
+			values[10] = ZSTidGetDatum(lasttid);
+			values[11] = PointerGetDatum(chunk);
 
 			tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 		}
@@ -639,6 +589,120 @@ pg_zs_dump_attstream(PG_FUNCTION_ARGS)
 	destroy_attstream_decoder(&decoder);
 
 	return (Datum) 0;
+}
+
+Datum
+pg_zs_decode_chunk(PG_FUNCTION_ARGS)
+{
+	bool attbyval = PG_GETARG_BOOL(0);
+	int attlen = PG_GETARG_INT16(1);
+	zstid prevtid = PG_GETARG_ZSTID(2);
+	zstid lasttid = PG_GETARG_ZSTID(3);
+	bytea *chunk = PG_GETARG_BYTEA_P(4);
+	attstream_decoder decoder;
+	Datum		values[4];
+	bool		nulls[4];
+	ZSAttStream *attstream = palloc(SizeOfZSAttStreamHeader + VARSIZE_ANY_EXHDR(chunk));
+	TupleDesc	tupdesc;
+	HeapTuple tuple;
+
+	memset(values, 0, sizeof(values));
+	memset(nulls, 0, sizeof(nulls));
+
+	/* Build a tuple descriptor for our result type */
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	attstream->t_decompressed_size = VARSIZE_ANY_EXHDR(chunk);
+	attstream->t_decompressed_bufsize = VARSIZE_ANY_EXHDR(chunk);
+	attstream->t_size =  SizeOfZSAttStreamHeader + VARSIZE_ANY_EXHDR(chunk);
+	attstream->t_flags = 0;
+	attstream->t_lasttid = lasttid;
+	memcpy(attstream->t_payload, VARDATA_ANY(chunk), VARSIZE_ANY_EXHDR(chunk));
+
+	init_attstream_decoder(&decoder, attbyval, attlen);
+	decode_attstream_begin(&decoder, attstream);
+	decoder.prevtid = prevtid;
+
+	if (!decode_attstream_cont(&decoder))
+		PG_RETURN_NULL();
+	else
+	{
+		ArrayBuildState *astate_tids = NULL;
+		ArrayBuildState *astate_datums = NULL;
+		ArrayBuildState *astate_isnulls = NULL;
+
+		for (int i = 0; i < decoder.num_elements; i++)
+		{
+
+			bytea *attr_data;
+
+			astate_tids = accumArrayResult(astate_tids,
+			                               ZSTidGetDatum(decoder.tids[i]),
+			                               false,
+			                               ZSTIDOID,
+			                               CurrentMemoryContext);
+			if (decoder.isnulls[i])
+			{
+				astate_datums = accumArrayResult(astate_datums,
+				                                 (Datum) 0,
+				                                 true,
+				                                 BYTEAOID,
+				                                 CurrentMemoryContext);
+			}
+			else
+			{
+				/*
+				 * Fixed length, attribute by value
+				 */
+				if (attbyval && attlen > 0)
+				{
+					attr_data = (bytea *) palloc(attlen + VARHDRSZ);
+					SET_VARSIZE(attr_data, attlen + VARHDRSZ);
+					memcpy(VARDATA(attr_data), &decoder.datums[i], attlen);
+				}
+				else if (!attbyval && attlen > 0)
+				{
+					attr_data = (bytea *) palloc(attlen + VARHDRSZ);
+					SET_VARSIZE(attr_data, attlen + VARHDRSZ);
+					memcpy(VARDATA(attr_data),
+					       DatumGetPointer(decoder.datums[i]),
+					       attlen);
+				}
+				else if (attlen < 0)
+				{
+					int len;
+					len       =
+						VARSIZE_ANY_EXHDR(DatumGetPointer(decoder.datums[i]));
+					attr_data = (bytea *) palloc(len + VARHDRSZ);
+					SET_VARSIZE(attr_data, len + VARHDRSZ);
+					memcpy(VARDATA(attr_data),
+					       VARDATA_ANY(DatumGetPointer(decoder.datums[i])),
+					       len);
+				}
+				astate_datums = accumArrayResult(astate_datums,
+				                                 PointerGetDatum(attr_data),
+				                                 false,
+				                                 BYTEAOID,
+				                                 CurrentMemoryContext);
+			}
+			astate_isnulls = accumArrayResult(astate_isnulls,
+			                                  BoolGetDatum(decoder.isnulls[i]),
+			                                  false,
+			                                  BOOLOID,
+			                                  CurrentMemoryContext);
+		}
+
+		values[0] = Int32GetDatum(decoder.num_elements);
+		values[1] = PointerGetDatum(makeArrayResult(astate_tids, CurrentMemoryContext));
+		values[2] = PointerGetDatum(makeArrayResult(astate_datums, CurrentMemoryContext));
+		values[3] = PointerGetDatum(makeArrayResult(astate_isnulls, CurrentMemoryContext));
+	}
+
+	destroy_attstream_decoder(&decoder);
+
+	tuple = heap_form_tuple(tupdesc, values, nulls);
+	PG_RETURN_DATUM(HeapTupleGetDatum(tuple));
 }
 
 /*

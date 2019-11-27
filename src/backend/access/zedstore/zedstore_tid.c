@@ -16,8 +16,6 @@
 #include "utils/fmgrprotos.h"
 #include "utils/int8.h"
 
-#define PG_GETARG_ZSTID(n) DatumGetZSTid(PG_GETARG_DATUM(n))
-#define PG_RETURN_ZSTID(x) return ZSTidGetDatum(x)
 
 Datum
 tidtozstid(PG_FUNCTION_ARGS)

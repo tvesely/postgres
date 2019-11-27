@@ -26,6 +26,9 @@ typedef uint64	zstid;
 
 #define MaxZSTidOffsetNumber	129
 
+#define PG_GETARG_ZSTID(n) DatumGetZSTid(PG_GETARG_DATUM(n))
+#define PG_RETURN_ZSTID(x) return ZSTidGetDatum(x)
+
 /* fmgr interface macros */
 #ifdef USE_FLOAT8_BYVAL
 #define ZSTidGetDatum(X) Int64GetDatum(X)
